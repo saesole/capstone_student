@@ -6,6 +6,10 @@
 FROM tiryoh/ros2-desktop-vnc:humble
 
 USER root
+
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
+RUN apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys F42ED6FBAB17C654
+
 SHELL ["/bin/bash", "-c"]
 
 # ── 1. Gazebo Classic 제거 (Fortress와 충돌 방지) ──────────────────

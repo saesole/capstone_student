@@ -70,39 +70,104 @@ class CoordinatorFSM(Node):
         s = self.state
         if s in (State.IDLE, State.DONE, State.FAILED):
             return
+
         if s == State.PLANNING:
-            # TODO:
-            #  action = self.cmd.get("action")
-            #  - "stop" → self.state=State.DONE
-            #  - "navigate"/"pick_and_place" → 이동 전 자동 undock: self._enter_dock("undock", State.UNDOCKING)
-            #  - 그 외 → FAILED
+            action = self.cmd.get("action")
+
+            if action == "stop":
+                self.state = State.DONE
+                self._status("Mission stopped")
+                return
+
+            if action in ("navigate", "pick_and_place"):
+                self._enter_dock("undock", State.UNDOCKING)
+                return
+
+            self.state = State.FAILED
+            self._status(f"Unknown action: {action}")
             return
-        # 단계 진행 중이면 결과 올 때까지 대기 → 결과 오면 _advance 호출 (구현됨)
+
         if self._busy and not self._done:
             return
+
         if self._busy and self._done:
             self._busy = False
             self._advance(self._ok)
-
     # ── ② TODO: 전이표 (성공 시 다음 단계, 실패 시 재시도/FAILED) ──
     def _advance(self, success: bool):
         if not success:
             if self.retries < self.max_retries:
                 self.retries += 1
-                self._status(f"단계 실패 → 재시도 {self.retries}/{self.max_retries} ({self.state.name})")
-                self._retry_current(); return
-            self._status(f"재시도 한도 초과 → FAILED ({self.state.name})")
-            self.state = State.FAILED; return
+                self._status(f"Step failed - retry {self.retries}/{self.max_retries} ({self.state.name})")
+                self._retry_current()
+                return
+
+            self._status(f"Retry limit exceeded - FAILED ({self.state.name})")
+            self.state = State.FAILED
+            return
+
         self.retries = 0
         action = self.cmd.get("action")
-        # TODO: 현재 self.state 에 따라 다음 단계 진입. 권장 전이:
-        #  UNDOCKING   → navigate: _enter_nav(place..., NAVIGATING) / pick_and_place: _enter_nav(pick..., NAVIGATING)
-        #  NAVIGATING  → navigate: _finish_mission() / pick_and_place: _enter_grasp("grasp", pick..., GRASPING)
-        #  GRASPING    → _enter_nav(place..., TRANSPORTING)
-        #  TRANSPORTING→ _enter_grasp("place", place..., PLACING)
-        #  PLACING     → _finish_mission()
-        #  DOCKING     → self.state = State.DONE
-        pass
+
+        if self.state == State.UNDOCKING:
+            if action == "navigate":
+                self._enter_nav(
+                    self.cmd.get("place_x", 0.0),
+                    self.cmd.get("place_y", 0.0),
+                    State.NAVIGATING,
+                )
+                return
+
+            if action == "pick_and_place":
+                self._enter_nav(
+                    self.cmd.get("pick_x", 0.0),
+                    self.cmd.get("pick_y", 0.0),
+                    State.NAVIGATING,
+                )
+                return
+
+        if self.state == State.NAVIGATING:
+            if action == "navigate":
+                self._finish_mission()
+                return
+
+            if action == "pick_and_place":
+                self._enter_grasp(
+                    "grasp",
+                    self.cmd.get("pick_x", 0.0),
+                    self.cmd.get("pick_y", 0.0),
+                    State.GRASPING,
+                )
+                return
+
+        if self.state == State.GRASPING:
+            self._enter_nav(
+                self.cmd.get("place_x", 0.0),
+                self.cmd.get("place_y", 0.0),
+                State.TRANSPORTING,
+            )
+            return
+
+        if self.state == State.TRANSPORTING:
+            self._enter_grasp(
+                "place",
+                self.cmd.get("place_x", 0.0),
+                self.cmd.get("place_y", 0.0),
+                State.PLACING,
+            )
+            return
+
+        if self.state == State.PLACING:
+            self._finish_mission()
+            return
+
+        if self.state == State.DOCKING:
+            self.state = State.DONE
+            self._status("Mission done")
+            return
+
+        self.state = State.FAILED
+        self._status(f"Unexpected state: {self.state.name}")
 
     def _finish_mission(self):
         if self.auto_redock:
@@ -113,8 +178,60 @@ class CoordinatorFSM(Node):
 
     # ── ③ TODO: 현재 단계 재시도 (해당 _enter_* 재호출) ───────────
     def _retry_current(self):
-        # TODO: self.state 에 맞는 _enter_dock/_enter_nav/_enter_grasp 를 같은 좌표로 재호출
-        pass
+        action = self.cmd.get("action")
+
+        if self.state == State.UNDOCKING:
+            self._enter_dock("undock", State.UNDOCKING)
+            return
+
+        if self.state == State.NAVIGATING:
+            if action == "navigate":
+                self._enter_nav(
+                    self.cmd.get("place_x", 0.0),
+                    self.cmd.get("place_y", 0.0),
+                    State.NAVIGATING,
+                )
+                return
+
+            self._enter_nav(
+                self.cmd.get("pick_x", 0.0),
+                self.cmd.get("pick_y", 0.0),
+                State.NAVIGATING,
+            )
+            return
+
+        if self.state == State.GRASPING:
+            self._enter_grasp(
+                "grasp",
+                self.cmd.get("pick_x", 0.0),
+                self.cmd.get("pick_y", 0.0),
+                State.GRASPING,
+            )
+            return
+
+        if self.state == State.TRANSPORTING:
+            self._enter_nav(
+                self.cmd.get("place_x", 0.0),
+                self.cmd.get("place_y", 0.0),
+                State.TRANSPORTING,
+            )
+            return
+
+        if self.state == State.PLACING:
+            self._enter_grasp(
+                "place",
+                self.cmd.get("place_x", 0.0),
+                self.cmd.get("place_y", 0.0),
+                State.PLACING,
+            )
+            return
+
+        if self.state == State.DOCKING:
+            self._enter_dock("dock", State.DOCKING)
+            return
+
+        self.state = State.FAILED
+        self._status(f"Cannot retry state: {self.state.name}")
 
     # ── 제공: 단계 진입 헬퍼 (sim_mode면 성공 시뮬, 아니면 요청 발행) ──
     def _enter_dock(self, op, next_state):

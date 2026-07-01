@@ -81,18 +81,40 @@ class NodeALLM(Node):
 
     # ── ② TODO: 키워드 폴백 파서 (groq 없거나 실패 시) ────────────
     def _parse_fallback(self, text: str) -> RobotCommand:
-        """규칙 기반 파서. groq 차단 상황에서도 데모가 돌아가게 하는 안전망.
-        힌트:
-          - '정지/멈춰/스톱' 포함 → action=STOP
-          - 텍스트에서 'A구역','B 구역' 등으로 등장 구역 추출 (ZONES 키)
-          - 이동 키워드('옮','이동','놓','배치','운반','가져') + 구역 2개↑
-              → PICK_AND_PLACE, pick=ZONES[첫구역], place=ZONES[둘째구역]
-          - 구역 1개만 → NAVIGATE, place=ZONES[그 구역]
-          - 아무것도 아니면 → STOP (안전 기본값)
-        """
-        # TODO: 위 규칙대로 구현 후 RobotCommand 반환
-        return RobotCommand(action=ActionType.STOP)
+        clean = text.replace(" ", "").upper()
 
+        stop_words = ["\uc815\uc9c0", "\uba48\ucdb0", "\uc2a4\ud1b1", "STOP"]
+        if any(word in clean for word in stop_words):
+            return RobotCommand(action=ActionType.STOP)
+
+        zones = []
+        for name in ZONES.keys():
+            if name in clean:
+                zones.append(name)
+
+        move_words = ["\uc62e", "\uc774\ub3d9", "\ub193", "\ubc30\uce58", "\uc6b4\ubc18", "\uac00\uc838"]
+
+        if any(word in clean for word in move_words) and len(zones) >= 2:
+            pick = ZONES[zones[0]]
+            place = ZONES[zones[1]]
+            return RobotCommand(
+                action=ActionType.PICK_AND_PLACE,
+                object=self._extract_object(text),
+                pick_x=pick[0],
+                pick_y=pick[1],
+                place_x=place[0],
+                place_y=place[1],
+            )
+
+        if len(zones) >= 1:
+            place = ZONES[zones[0]]
+            return RobotCommand(
+                action=ActionType.NAVIGATE,
+                place_x=place[0],
+                place_y=place[1],
+            )
+
+        return RobotCommand(action=ActionType.STOP)
     @staticmethod
     def _extract_object(text: str) -> str:
         # (선택) "~를/을" 앞 단어를 object로. 미구현 시 "박스" 고정도 무방.
